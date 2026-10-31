@@ -1,0 +1,92 @@
+services:
+
+  postgres-primary:
+    image: postgres:17-alpine
+
+    container_name: postgres-primary
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-this_is_the_new_password}
+      POSTGRES_DB: ${POSTGRES_DB:-primaryDB}
+
+    volumes:
+      - primary_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+
+    networks:
+      - app-network
+
+    ports:
+      - "5432:5432"
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+      interval: 5s
+      timeout: 3s
+      retries: 7
+      start_period: 15s
+
+    restart: unless-stopped
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p1
+    environment:
+      DB_HOST: postgres-primary
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-this_is_the_new_password}
+      DB_NAME: ${POSTGRES_DB:-primaryDB}
+
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-200}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
+      QUERY_WAIT_TIMEOUT: ${PGBOUNCER_QUERY_WAIT_TIMEOUT:-20}
+      SERVER_LOGIN_RETRY: ${PGBOUNCER_SERVER_LOGIN_RETRY:-1}
+
+    networks:
+      - app-network
+
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    ports:
+      - "${PGBOUNCER_PORT:-6432}:5432"
+
+  app:
+    build: .
+    container_name: database-protection-app
+    environment:
+      # Spring Boot JDBC configuration
+      SPRING_DATASOURCE_URL: jdbc:postgresql://pgbouncer:5432/${POSTGRES_DB:-primaryDB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-this_is_the_new_password}
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+
+      # Existing application configuration
+      PGBOUNCER_HOST: pgbouncer
+      PGBOUNCER_PORT: "5432"
+      POSTGRES_PRIMARY_HOST: postgres-primary
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-this_is_the_new_password}
+      POSTGRES_DB: ${POSTGRES_DB:-primaryDB}
+
+    networks:
+      - app-network
+    depends_on:
+      pgbouncer:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  primary_data:
+
+networks:
+  app-network:
+    driver: bridge
