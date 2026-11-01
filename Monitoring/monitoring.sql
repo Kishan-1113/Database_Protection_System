@@ -1,6 +1,6 @@
 SELECT format('CREATE ROLE postgres_exporter LOGIN PASSWORD %L', :'exporter_password')
 WHERE NOT EXISTS (
-    SELECT FROM pg_roles WHERE rolname = 'postgres_exporter'
+    SELECT 1 FROM pg_roles WHERE rolname = 'postgres_exporter'
 )
 \gexec
 
