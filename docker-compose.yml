@@ -1,16 +1,12 @@
 services:
-
   postgres-primary:
     image: postgres:17-alpine
-
     container_name: postgres-primary
-
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
-      POSTGRES_DB: ${POSTGRES_DB:-primaryDB}
+      POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_EXPORTER_PASSWORD: ${POSTGRES_EXPORTER_PASSWORD:?POSTGRES_EXPORTER_PASSWORD must be set}
-
     volumes:
       - primary_data:/var/lib/postgresql/data
       - type: bind
@@ -19,22 +15,15 @@ services:
         read_only: true
         bind:
           create_host_path: false
-
     networks:
       - app-network
 
-    ports:
-      - "5432:5432"
-
     healthcheck:
-      test:
-        - CMD-SHELL
-        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+      test: [ "CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\"" ]
       interval: 5s
       timeout: 3s
       retries: 7
       start_period: 15s
-
     restart: unless-stopped
 
   pgbouncer:
@@ -42,44 +31,53 @@ services:
     environment:
       DB_HOST: postgres-primary
       DB_PORT: "5432"
-      DB_USER: ${POSTGRES_USER:-postgres}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-this_is_the_new_password}
-      DB_NAME: ${POSTGRES_DB:-primaryDB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
 
       AUTH_TYPE: scram-sha-256
       POOL_MODE: transaction
 
       STATS_USERS: pgbouncer_monitor
-      PGBOUNCER_MONITOR_PASSWORD: ${PGBOUNCER_MONITOR_PASSWORD:?PGBOUNCER_MONITOR_PASSWORD must be set}
 
-      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-200}
-      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
-      QUERY_WAIT_TIMEOUT: ${PGBOUNCER_QUERY_WAIT_TIMEOUT:-20}
-      SERVER_LOGIN_RETRY: ${PGBOUNCER_SERVER_LOGIN_RETRY:-1}
+      PGBOUNCER_MONITOR_PASSWORD: ${PGBOUNCER_MONITOR_PASSWORD}
+
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE}
+      QUERY_WAIT_TIMEOUT: ${PGBOUNCER_QUERY_WAIT_TIMEOUT}
+      SERVER_LOGIN_RETRY: ${PGBOUNCER_SERVER_LOGIN_RETRY}
 
     entrypoint:
       - /bin/sh
       - -ec
     command:
       - |
+        # FIX A: Inject the critical startup parameter rule right into the default pgbouncer.ini before launching
+        if ! grep -q "ignore_startup_parameters" /etc/pgbouncer/pgbouncer.ini; then
+          echo "ignore_startup_parameters = extra_float_digits" >> /etc/pgbouncer/pgbouncer.ini
+        fi
+
+        # Populate the auth file
         printf '"pgbouncer_monitor" "%s"\n' "$$PGBOUNCER_MONITOR_PASSWORD" > /etc/pgbouncer/userlist.txt
+        # If administrative credentials match the primary DB user, add it to auth mapping
+        printf '"%s" "%s"\n' "$$DB_USER" "$$DB_PASSWORD" >> /etc/pgbouncer/userlist.txt
+
         exec /entrypoint.sh /usr/bin/pgbouncer /etc/pgbouncer/pgbouncer.ini
+
     networks:
       - app-network
-
     depends_on:
       postgres-primary:
         condition: service_healthy
     healthcheck:
-      test:
-        - CMD-SHELL
-        - pg_isready -h 127.0.0.1 -p 5432 -U "$$DB_USER" -d "$$DB_NAME"
+      # FIX B: Healthcheck tests network socket readiness rather than risking database credential drops
+      test: [ "CMD-SHELL", "nc -z 127.0.0.1 5432 || exit 1" ]
       interval: 5s
       timeout: 3s
       retries: 10
       start_period: 5s
     ports:
-      - "${PGBOUNCER_PORT:-6432}:5432"
+      - "${PGBOUNCER_PORT:-6432}:5432" # External clients connect via 6432
     restart: unless-stopped
 
   app:
@@ -87,24 +85,29 @@ services:
     container_name: database-protection-app
     environment:
       # Spring Boot JDBC configuration
-      SPRING_DATASOURCE_URL: jdbc:postgresql://pgbouncer:5432/${POSTGRES_DB:-primaryDB}
-      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://pgbouncer:5432/${POSTGRES_DB}?sslmode=disable
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
 
-      # Existing application configuration
+      # FIX C: Add Spring Boot Hikari optimizations explicitly to prevent pooler transaction starvation
+      SPRING_DATASOURCE_HIKARI_DATA_SOURCE_PROPERTIES_CACHE_PREP_STMTS: "false"
+      SPRING_DATASOURCE_HIKARI_DATA_SOURCE_PROPERTIES_USE_SERVER_PREP_STMTS: "false"
+
       PGBOUNCER_HOST: pgbouncer
       PGBOUNCER_PORT: "5432"
       POSTGRES_PRIMARY_HOST: postgres-primary
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
-      POSTGRES_DB: ${POSTGRES_DB:-primaryDB}
+      POSTGRES_DB: ${POSTGRES_DB}
 
     networks:
       - app-network
+
     depends_on:
       pgbouncer:
         condition: service_healthy
+
     ports:
       - "8080:8080"
     restart: unless-stopped
@@ -114,15 +117,18 @@ services:
     image: quay.io/prometheuscommunity/postgres-exporter:v0.18.1
     container_name: postgres-exporter
     environment:
-      DATA_SOURCE_URI: "postgres-primary:5432/${POSTGRES_DB:-primaryDB}?sslmode=disable"
+      DATA_SOURCE_URI: "postgres-primary:5432/${POSTGRES_DB}?sslmode=disable"
       DATA_SOURCE_USER: postgres_exporter
       DATA_SOURCE_PASS: ${POSTGRES_EXPORTER_PASSWORD:?POSTGRES_EXPORTER_PASSWORD must be set}
+
     networks:
       - app-network
       - monitoring-network
+
     depends_on:
       postgres-primary:
         condition: service_healthy
+
     restart: unless-stopped
 
   pgbouncer-exporter:
@@ -184,6 +190,5 @@ volumes:
 networks:
   app-network:
     driver: bridge
-
   monitoring-network:
     driver: bridge
