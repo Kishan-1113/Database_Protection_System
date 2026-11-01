@@ -1,0 +1,9 @@
+SELECT format('CREATE ROLE postgres_exporter LOGIN PASSWORD %L', :'exporter_password')
+WHERE NOT EXISTS (
+    SELECT FROM pg_roles WHERE rolname = 'postgres_exporter'
+)
+\gexec
+
+ALTER ROLE postgres_exporter WITH LOGIN PASSWORD :'exporter_password';
+GRANT CONNECT ON DATABASE :"database_name" TO postgres_exporter;
+GRANT pg_monitor TO postgres_exporter;
