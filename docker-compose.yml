@@ -13,9 +13,12 @@ services:
 
     volumes:
       - primary_data:/var/lib/postgresql/data
-      - ./sql:/docker-entrypoint-initdb.d:ro
-      - ./Monitoring/init-monitoring.sh:/docker-entrypoint-initdb.d/zz-monitoring.sh:ro
-      - ./Monitoring/monitoring.sql:/docker-entrypoint-initdb.d/monitoring.sql.in:ro
+      - type: bind
+        source: ./sql
+        target: /docker-entrypoint-initdb.d
+        read_only: true
+        bind:
+          create_host_path: false
 
     networks:
       - app-network
@@ -40,18 +43,27 @@ services:
       DB_HOST: postgres-primary
       DB_PORT: "5432"
       DB_USER: ${POSTGRES_USER:-postgres}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-this_is_the_new_password}
       DB_NAME: ${POSTGRES_DB:-primaryDB}
 
       AUTH_TYPE: scram-sha-256
       POOL_MODE: transaction
-      STATS_USERS: ${POSTGRES_USER:-postgres}
+
+      STATS_USERS: pgbouncer_monitor
+      PGBOUNCER_MONITOR_PASSWORD: ${PGBOUNCER_MONITOR_PASSWORD:?PGBOUNCER_MONITOR_PASSWORD must be set}
 
       MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-200}
       DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
       QUERY_WAIT_TIMEOUT: ${PGBOUNCER_QUERY_WAIT_TIMEOUT:-20}
       SERVER_LOGIN_RETRY: ${PGBOUNCER_SERVER_LOGIN_RETRY:-1}
 
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        printf '"pgbouncer_monitor" "%s"\n' "$$PGBOUNCER_MONITOR_PASSWORD" > /etc/pgbouncer/userlist.txt
+        exec /entrypoint.sh /usr/bin/pgbouncer /etc/pgbouncer/pgbouncer.ini
     networks:
       - app-network
 
@@ -117,7 +129,7 @@ services:
     image: prometheuscommunity/pgbouncer-exporter:v0.11.0
     container_name: pgbouncer-exporter
     command:
-      - "--pgBouncer.connectionString=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@pgbouncer:5432/pgbouncer?sslmode=disable"
+      - "--pgBouncer.connectionString=postgres://pgbouncer_monitor:${PGBOUNCER_MONITOR_PASSWORD:?PGBOUNCER_MONITOR_PASSWORD must be set}@pgbouncer:5432/pgbouncer?sslmode=disable"
     networks:
       - app-network
       - monitoring-network
@@ -130,7 +142,12 @@ services:
     image: prom/prometheus:v3.8.0
     container_name: prometheus
     volumes:
-      - ./Monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - type: bind
+        source: ./Monitoring/prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+        bind:
+          create_host_path: false
       - prometheus_data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
