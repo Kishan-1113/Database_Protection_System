@@ -7,11 +7,35 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: ${POSTGRES_DB:-primaryDB}
       POSTGRES_EXPORTER_PASSWORD: ${POSTGRES_EXPORTER_PASSWORD:?POSTGRES_EXPORTER_PASSWORD must be set}
+
+    ports:
+      - "5432:5432"
+
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - max_replication_slots=10
+      - -c
+      - max_wal_senders=10
+      - -c
+      - wal_keep_size=256MB
+      - -c
+      - hot_standby=on
+      - -c
+      - listen_addresses=*
+      - -c
+      - password_encryption=scram-sha-256
+
     volumes:
       - primary_data:/var/lib/postgresql/data
       - ./sql:/docker-entrypoint-initdb.d:ro
+
     networks:
       - db-network
+      - monitoring-network
+
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\"" ]
       interval: 5s
